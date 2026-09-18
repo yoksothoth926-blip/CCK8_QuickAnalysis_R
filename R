@@ -1,0 +1,160 @@
+# 1. script information ####
+# Script Name: CCK8 quick analysis
+# Script description: Applicable for tentatively processed IC50 data in xlsx format
+#                    能够批量处理经过初步加工的excel存储的IC50数据(见下方数据格式示例)
+#                    Able to deal with an excel file with multiple sheets. Sheets containing non-IC50 data causing fitting failure
+#                    一个xlsx文件中可以包含多张sheet，但是包含非IC50数据的sheet中的数据会拟合失败
+#                    Export IC50 data and response curve
+#                    产出IC50和lg剂量-活性曲线图
+#                    Please set the working directory in 2.1
+#                    请在2.1中设置工作目录，只需要设置一次
+#                    Please ONLY put IC50 data xlsx in the working directory. Other xlsx files will let this script catch the wrong source data
+#                    工作目录只能存在一个包含初步IC50数据的excel文件，否则脚本会抓取错误
+#                    Default model for fitting include 4PL model and Weibull model. Change model choices in 5.2
+#                    Default unit of drug concentration is μM. Change the unit in 6.1
+#                    默认药物浓度单位为μM，在6.1中可以改变单位
+# Applicable formart:
+# 数据格式示例
+# First line: numeric drug concentration, no unit
+# 第一行: 数字类型的药物浓度，无浓度单位
+# Second line and latter: Relative cell viability, NO need for Control data, each cell represents a replicate
+# 第二行起: 相对细胞活力，不需要对照组数据, 每格代表一次重复
+# No string data in the table
+# 表格中不应包含文本类型的数据
+# Example:
+# |100        | 50        | 25        | 12.5     | 6.25     | ... |
+# |-----------|-----------|-----------|----------|----------|-----|
+# | -0.02513  | -0.00416  | -0.00416  | 0.52889  | 0.58212  | ... |
+# | -0.01384  | -0.00013  |  0.01034  | 0.51841  | 0.57163  | ... |
+# | -0.02594  | -0.00981  |  0.01196  | 0.68212  | 0.59663  | ... |
+
+# 2. 下载加载必要的R包和设置工作目录####
+# 如果没有这些包，需要自行下载
+#install.packages("readxl")
+#install.packages("tidyr")
+#install.packages("dplyr")
+#install.packages("drc")
+#install.packages("ggsci")
+
+library(readxl)
+library(tidyr)
+library(dplyr)
+library(drc)
+library(ggsci)
+
+setwd("") # 2.1 在此设置工作目录 ####
+output_dir <- paste0(getwd(), "\\")
+
+# 3. 读取工作目录中的xlsx文件####
+file_path <- list.files(pattern = "\\.xlsx$")[1]
+sheets <- excel_sheets(file_path)
+
+# 4. 创建一个新的.csv文件以收集所有的IC50数值####
+IC50_results <- data.frame(
+  Sheet_Name = character(),
+  IC50 = numeric(),
+  Best_Model = character(),
+  stringsAsFactors = FALSE
+)
+
+# 5. for语句循环处理####
+# 5.1 条件与数据整理清洗#####
+for (current_sheet in sheets) {
+  message("正在处理 Sheet", current_sheet)
+  raw_data <- read_excel(file_path,
+    sheet = current_sheet,
+    .name_repair = "minimal"
+  )
+
+  long_data <- raw_data %>%
+    pivot_longer(
+      cols = everything(),
+      names_to = "dose",
+      values_to = "response",
+    ) %>%
+    mutate(dose = as.numeric(dose)) %>%
+    drop_na()
+
+  # 5.2 依次拟合模型####
+  model_list <- list(
+    "LL.4_Free" = LL.4(), 
+    "LL.4_Fixed" = LL.4(fixed = c(NA, 0, 1, NA)),
+    "W1.4_Free" = W1.4(),
+    "W1.4_Fixed" = W1.4(fixed = c(NA, 0, 1, NA)),
+    "W2.4_Free" = W2.4(),
+    "W2.4_Fixed" = W2.4(fixed = c(NA, 0, 1, NA))
+  )
+  
+  all_fits <- lapply(model_list, function(m){
+    tryCatch({
+      drm(response ~ dose, data = long_data, fct = m)
+    }, warning = function(w) NULL, error = function(e) NULL)
+  })
+  
+  successful_fits <- Filter(Negate(is.null), all_fits)
+  
+  # 5.3若所有模型均拟合失败，直接跳过current_sheet进行下一个实体的处理####
+  if (length(successful_fits) == 0) {
+    message("警告:现有的4PL和Weibull模型无法拟合 [", current_sheet, "]，可以尝试在model_list中加入其他模型进行拟合")
+    next
+  } 
+  
+  # 5.4比较所有拟合成功的模型的AIC，找到拟合最优的模型并提取其信息####
+  aics <- sapply(successful_fits, AIC)
+  best_model_name <- names(which.min(aics))
+  fit_model <- successful_fits[[best_model_name]]
+  
+  message("->拟合完毕，最优拟合模型为[", best_model_name, "], AIC = ", round(min(aics), 2))
+  
+# 5.5提取当前sheet数据对应的IC50并生成汇报 ####
+  current_IC50 <- ED(fit_model, 50)[1,1]
+  
+# 将前面计算出的对象填入结果表格“IC50_results”
+  IC50_results <- rbind(IC50_results, data_frame(
+    Sheet_Name = current_sheet,
+    IC50 = current_IC50,
+    Best_Model = best_model_name
+  ))
+  
+# 5.6 根据使用的模型(Free or Fixed)判断作图应该使用absolute_ic50还是relative_ic50的50%活力截线 ####
+  if (!is.na(fit_model$fct$fixed[3])) {
+    y_mid <- 0.5
+    
+  } else{
+    params <- coef(fit_model)
+    y_mid <- (params["c:(Intercept)"] + params["d:(Intercept)"]) / 2
+    
+  }
+
+# 6 作图导出 ####
+  tiff_name <- paste0(output_dir, current_sheet, "_Response_Curve.tiff")
+  tiff(tiff_name, width = 6, height = 5, units = "in", res = 300)
+
+  plot(fit_model,
+    type = "all",
+    log = "x",
+    xlab = "Concentration (μM)", # 6.1 ####在此处改变药物浓度单位
+    ylab = "Relative Cell Viability",
+    main = paste(current_sheet, "Dose-Response"),
+    col = "#2C3E50",
+    pch = 21,
+    bg = "#BDC3C780",
+    cex = 1.2,
+    lwd = 2.5
+  )
+
+  abline(h = y_mid, lty = 2, col = "grey40", lwd = 1.5)
+  abline(v = current_IC50, lty = 2, col = "grey40", lwd = 1.5)
+  text(
+    x = current_IC50, y = y_mid + 0.05,
+    labels = paste0("IC50 = ", round(current_IC50, 2), "μM\nModel: ", best_model_name),
+    pos = 4, col = "black", cex = 0.9
+  )
+
+  dev.off()
+}
+
+# 5.8 循环结束后导出前面生成IC50.csv报告
+csv_name <- paste0(output_dir, "All_Sheets_IC50_Summary.csv")
+write.csv(IC50_results, csv_name, row.names = FALSE)
+message("所有 Sheet 处理完毕！汇总表和所有图片已生成在", output_dir)
