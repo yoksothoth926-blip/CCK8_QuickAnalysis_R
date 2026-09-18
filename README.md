@@ -1,16 +1,35 @@
 Applicable for tentatively processed IC50 data in xlsx format (see example format below)
+
 能够批量处理经过初步加工的excel存储的IC50数据(见下方数据格式示例)
+
+
 Able to deal with an excel file with multiple sheets. Sheets containing non-IC50 data causing fitting failure
+
 一个xlsx文件中可以包含多张sheet，但是包含非IC50数据的sheet中的数据会拟合失败
+
+
 Export IC50 data and response curve
+
 产出IC50和lg剂量-活性曲线图
+
+
 Please set the working directory in 2.1
+
 请在2.1中设置工作目录，只需要设置一次
+
+
 Please ONLY put IC50 data xlsx in the working directory. Other xlsx files will let this script catch the wrong source data
+
 工作目录只能存在一个包含初步IC50数据的excel文件，否则脚本会抓取错误
+
+
 Default model for fitting include 4PL model and Weibull model. Change model choices in 5.2
+
 默认拟合模型包括4PL和Weibull模型（设限或不设限），可以在5.2中添加或删减模型
+
+
 Default unit of drug concentration is μM. Change the unit in 6.1
+
 默认药物浓度单位为μM，在6.1中可以改变单位
 
 
